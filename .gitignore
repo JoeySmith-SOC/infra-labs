@@ -1,0 +1,27 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python / Ansible
+__pycache__/
+*.pyc
+.venv/
+.ansible/
+*.retry
+
+# Secrets (never commit real creds)
+secrets/
+*.pem
+*.key
+
+# VM bits
+*.qcow2
+*.img
+*.iso
+
+# Chef
+chef-cookbooks/**/.kitchen/
+.kitchen/
+.kitchen.local.yml
