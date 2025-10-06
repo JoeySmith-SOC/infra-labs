@@ -1,0 +1,182 @@
+- name: Enforce static/DHCP IPv4 via NetworkManager (inline)
+  hosts: parrot
+  become: true
+  gather_facts: false
+
+  vars:
+    nm_iface: "{{ nm_iface | default('') }}"
+    nm_method: "{{ nm_method | default('manual') }}"    # 'manual' or 'auto'
+    nm_ip_cidr: "{{ nm_ip_cidr | default('') }}"
+    nm_gateway: "{{ nm_gateway | default('') }}"
+    nm_dns: "{{ nm_dns | default(['1.1.1.1','8.8.8.8']) }}"
+    nm_conn_name: "{{ nm_conn_name | default('') }}"
+
+  tasks:
+    - name: Ensure NetworkManager is installed
+      package:
+        name: network-manager
+        state: present
+
+    - name: Ensure NetworkManager is running
+      systemd:
+        name: NetworkManager
+        state: started
+        enabled: true
+
+    - name: Detect interface if not provided (default route dev)
+      shell: |
+        ip route get 1.1.1.1 | awk '/dev /{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}' | head -n1
+      args:
+        executable: /bin/bash
+      register: nm_detect_iface
+      changed_when: false
+      when: nm_iface | length == 0
+
+    - name: Set detected interface fact
+      set_fact:
+        nm_iface: "{{ nm_detect_iface.stdout }}"
+      when: nm_iface | length == 0
+
+    - name: Fail if interface is still unknown
+      fail:
+        msg: "nm_iface is not set. Set it in ansible/host_vars/parrot.yml"
+      when: nm_iface | length == 0
+
+    - name: Get active NM connections (name:device)
+      shell: |
+        nmcli -t -f NAME,DEVICE con show --active || true
+      register: nm_active
+      changed_when: false
+
+    - name: Pick connection name bound to iface if not provided
+      set_fact:
+        nm_conn_name: "{{ (nm_active.stdout_lines | map('split', ':') | selectattr('1','equalto', nm_iface) | first | default(['','']) )[0] }}"
+      when: nm_conn_name | length == 0
+
+    - name: Fallback to any connection bound to iface
+      shell: |
+        nmcli -t -f NAME,DEVICE con show | awk -F: -v d="{{ nm_iface }}" '$2==d{print $1}' | head -n1
+      args:
+        executable: /bin/bash
+      register: nm_any_conn
+      changed_when: false
+      when: nm_conn_name | length == 0
+
+    - name: Use fallback connection if available
+      set_fact:
+        nm_conn_name: "{{ nm_any_conn.stdout }}"
+      when: nm_conn_name | length == 0 and nm_any_conn.stdout | length > 0
+
+    - name: Create a new connection if none exists (manual only)
+      shell: |
+        nmcli con add type ethernet ifname "{{ nm_iface }}" con-name "static-{{ nm_iface }}" ip4 "{{ nm_ip_cidr | default('0.0.0.0/24') }}"
+      register: nm_created
+      changed_when: "'successfully added' in (nm_created.stdout + nm_created.stderr | default('')) | lower"
+      when: nm_conn_name | length == 0 and nm_method == 'manual'
+
+    - name: Set nm_conn_name to created one
+      set_fact:
+        nm_conn_name: "static-{{ nm_iface }}"
+      when: nm_conn_name | length == 0 and nm_method == 'manual'
+
+    - name: Ensure IPv4 method (manual for static / auto for DHCP)
+      command: nmcli con mod "{{ nm_conn_name }}" ipv4.method "{{ nm_method }}"
+      register: nm_set_method
+      changed_when: nm_set_method.rc == 0
+
+    - name: Configure static IP (manual only)
+      command: nmcli con mod "{{ nm_conn_name }}" ipv4.addresses "{{ nm_ip_cidr }}"
+      when: nm_method == 'manual'
+
+    - name: Configure gateway (manual only)
+      command: nmcli con mod "{{ nm_conn_name }}" ipv4.gateway "{{ nm_gateway }}"
+      when: nm_method == 'manual'
+
+    - name: Configure DNS servers
+      command: nmcli con mod "{{ nm_conn_name }}" ipv4.dns "{{ (nm_dns | join(' ')) }}"
+
+    - name: Bring connection up
+      command: nmcli con up "{{ nm_conn_name }}"
+      register: nm_up
+      changed_when: nm_up.rc == 0
+
+    - name: Show connection summary
+      command: nmcli -f GENERAL,IP4 con show "{{ nm_conn_name }}"
+      changed_when: false
+4 via NetworkManager (inline)
+  hosts: parrot
+  become: true
+  gather_facts: false
+
+  vars:
+    nm_iface: "{{ nm_iface | default('') }}"
+    nm_method: "{{ nm_method | default('manual') }}"    # 'manual' or 'auto'
+    nm_ip_cidr: "{{ nm_ip_cidr | default('') }}"
+    nm_gateway: "{{ nm_gateway | default('') }}"
+    nm_dns: "{{ nm_dns | default(['1.1.1.1','8.8.8.8']) }}"
+    nm_conn_name: "{{ nm_conn_name | default('') }}"
+
+  tasks:
+    - name: Ensure NetworkManager is installed
+      package:
+        name: network-manager
+        state: present
+
+    - name: Ensure NetworkManager is running
+      systemd:
+        name: NetworkManager
+        state: started
+        enabled: true
+
+    - name: Detect interface if not provided (default route dev)
+      shell: |
+        ip route get 1.1.1.1 | awk '/dev /{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}' | head -n1
+      args: { executable: /bin/bash }
+      register: nm_detect_iface
+      changed_when: false
+      when: nm_iface | length == 0
+
+    - name: Set detected interface fact
+      set_fact:
+        nm_iface: "{{ nm_detect_iface.stdout }}"
+      when: nm_iface | length == 0
+
+    - name: Fail if interface is still unknown
+      fail:
+        msg: "nm_iface is not set. Set it in ansible/host_vars/parrot.yml"
+      when: nm_iface | length == 0
+
+    - name: Get active NM connections (name:device)
+      shell: nmcli -t -f NAME,DEVICE con show --active || true
+      register: nm_active
+      changed_when: false
+
+    - name: Pick connection name bound to iface if not provided
+      set_fact:
+        nm_conn_name: "{{ (nm_active.stdout_lines | map('split', ':') | selectattr('1','equalto', nm_iface) | first | default(['','']) )[0] }}"
+      when: nm_conn_name | length == 0
+
+    - name: Fallback to any connection bound to iface
+      shell: nmcli -t -f NAME,DEVICE con show | awk -F: -v d="{{ nm_iface }}" '$2==d{print $1}' | head -n1
+      register: nm_any_conn
+      changed_when: false
+      when: nm_conn_name | length == 0
+
+    - name: Use fallback connection if available
+      set_fact:
+        nm_conn_name: "{{ nm_any_conn.stdout }}"
+      when: nm_conn_name | length == 0 and nm_any_conn.stdout | length > 0
+
+    - name: Create a new connection if none exists (manual only)
+      shell: nmcli con add type ethernet ifname "{{ nm_iface }}" con-name "static-{{ nm_iface }}" ip4 "{{ nm_ip_cidr | default('0.0.0.0/24') }}"
+      register: nm_created
+      changed_when: "'successfully added' in (nm_created.stdout + nm_created.stderr | default('')) | lower"
+      when: nm_conn_name | length == 0 and nm_method == 'manual'
+
+    - name: Set nm_conn_name to created one
+      set_fact:
+        nm_conn_name: "static-{{ nm_iface }}"
+      when: nm_conn_name | length == 0 and nm_method == 'manual'
+
+    - name: Ensure IPv4 method (manual for static / auto for DHCP)
+      command: nmcli con mod "{{ nm_conn_name }}" 
