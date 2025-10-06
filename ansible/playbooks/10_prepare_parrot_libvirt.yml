@@ -1,4 +1,4 @@
-- name: Prepare Parrot as a libvirt/KVM hypervisor
+- name: Prepare Aurelius as a libvirt/KVM hypervisor
   hosts: Aurelius
   become: true
   gather_facts: true
