@@ -1,5 +1,5 @@
 - name: Prepare Parrot as a libvirt/KVM hypervisor
-  hosts: parrot
+  hosts: Aurelius
   become: true
   gather_facts: true
 
