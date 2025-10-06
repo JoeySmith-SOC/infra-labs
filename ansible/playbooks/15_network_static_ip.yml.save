@@ -1,5 +1,5 @@
 - name: Enforce static/DHCP IPv4 via NetworkManager (inline)
-  hosts: parrot
+  hosts: Aurelius
   become: true
   gather_facts: false
 
