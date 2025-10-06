@@ -1,5 +1,5 @@
 - name: Create an Ubuntu Server VM via cloud image (libvirt)
-  hosts: parrot
+  hosts: Aurelius
   become: true
   gather_facts: true
 
