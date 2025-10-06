@@ -1,0 +1,13 @@
+ansible_host: 192.168.0.25
+ansible_user: ingen
+ansible_ssh_private_key_file: ~/.ssh/id_ed25519_lab
+
+# Hypervisor prefs (tweak if desired)
+hv_set_hostname: true
+hv_hostname: "Aurelius"
+hv_disable_wifi: true
+hv_ether_iface: "enp7s0"
+hv_images_dir: "/var/lib/libvirt/images"
+hv_enable_ufw: true
+hv_ufw_allow_ssh_from_any: true
+hv_enable_fail2ban: true
