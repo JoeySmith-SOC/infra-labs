@@ -1,0 +1,175 @@
+- name: Baseline hypervisor setup on Parrot (KVM/libvirt + hardening)
+  hosts: Aurelius
+  become: true
+  gather_facts: true
+
+  vars:
+    # Packages for a QEMU/KVM hypervisor and helpers
+    hv_pkgs:
+      - qemu-system-x86
+      - qemu-utils
+      - libvirt-daemon
+      - libvirt-daemon-system
+      - libvirt-daemon-driver-qemu
+      - libvirt-clients
+      - virtinst
+      - bridge-utils
+      - cloud-image-utils
+      - qemu-guest-agent
+      - openssh-server
+      - ufw
+      - fail2ban
+      - network-manager
+
+  tasks:
+    - name: (Optional) set system hostname
+      when: hv_set_hostname | default(false)
+      ansible.builtin.hostname:
+        name: "{{ hv_hostname }}"
+
+    - name: Ensure /etc/hosts contains the new hostname
+      when: hv_set_hostname | default(false)
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s+'
+        line: "127.0.1.1   {{ hv_hostname }}"
+        create: yes
+
+    - name: Install hypervisor and security packages
+      ansible.builtin.apt:
+        name: "{{ hv_pkgs }}"
+        state: present
+        update_cache: yes
+
+    - name: Ensure NetworkManager is enabled/started
+      ansible.builtin.systemd:
+        name: NetworkManager
+        state: started
+        enabled: true
+
+    - name: (Optional) disable Wi-Fi radio so Ethernet is primary
+      when: hv_disable_wifi | default(false)
+      ansible.builtin.command: nmcli radio wifi off
+      changed_when: true
+
+    - name: Enable libvirt sockets (socket-activated)
+      ansible.builtin.systemd:
+        name: libvirtd.socket
+        state: started
+        enabled: true
+
+    - name: Start virtlogd/virtlockd sockets (ignore if not present)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - virtlogd.socket
+        - virtlockd.socket
+      ignore_errors: true
+
+    - name: Ensure images directory exists
+      ansible.builtin.file:
+        path: "{{ hv_images_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Add {{ ansible_user }} to libvirt + kvm groups
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: libvirt,kvm
+        append: true
+
+    - name: Verify we can talk to libvirt
+      ansible.builtin.command: virsh -c qemu:///system list --all
+      register: virsh_conn
+      changed_when: false
+
+    - name: Check if default network exists
+      ansible.builtin.command: virsh net-info default
+      register: netinfo
+      failed_when: false
+      changed_when: false
+
+    - name: Define default network if missing
+      when: "'not found' in (netinfo.stderr | default(''))"
+      ansible.builtin.copy:
+        dest: /tmp/default-net.xml
+        content: |
+          <network>
+            <name>default</name>
+            <bridge name='virbr0' stp='on' delay='0'/>
+            <forward mode='nat'/>
+            <ip address='192.168.122.1' netmask='255.255.255.0'>
+              <dhcp>
+                <range start='192.168.122.100' end='192.168.122.254'/>
+              </dhcp>
+            </ip>
+          </network>
+
+    - name: Create default network from XML (if needed)
+      when: "'not found' in (netinfo.stderr | default(''))"
+      ansible.builtin.command: virsh net-define /tmp/default-net.xml
+
+    - name: Autostart and start default network
+      ansible.builtin.shell: |
+        set -e
+        virsh net-autostart default
+        virsh net-start default 2>/dev/null || true
+      args:
+        executable: /bin/bash
+
+    - name: Enable and start qemu-guest-agent service
+      ansible.builtin.systemd:
+        name: qemu-guest-agent
+        state: started
+        enabled: true
+      ignore_errors: true
+
+    - name: (Optional) Enable UFW
+      when: hv_enable_ufw | default(true)
+      ansible.builtin.command: ufw --force enable
+      register: ufw_enable
+      changed_when: "'active' in ufw_enable.stdout.lower() or 'enabling' in ufw_enable.stdout.lower()"
+
+    - name: Allow SSH in UFW
+      when: hv_enable_ufw | default(true)
+      ansible.builtin.command: ufw allow OpenSSH
+      changed_when: true
+
+    - name: (Optional) install minimal Fail2ban jail.local for sshd
+      when: hv_enable_fail2ban | default(true)
+      ansible.builtin.copy:
+        dest: /etc/fail2ban/jail.d/10-sshd.local
+        mode: '0644'
+        content: |
+          [sshd]
+          enabled = true
+          bantime = 1h
+          findtime = 10m
+          maxretry = 5
+
+    - name: Ensure fail2ban is enabled/started
+      when: hv_enable_fail2ban | default(true)
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: started
+        enabled: true
+
+    - name: Final verification (report)
+      ansible.builtin.shell: |
+        set -e
+        echo "=== libvirt connection ==="
+        virsh -c qemu:///system list --all || true
+        echo "=== networks ==="
+        virsh net-list --all || true
+        echo "=== UFW status ==="
+        ufw status verbose || true
+      args:
+        executable: /bin/bash
+      register: final_report
+      changed_when: false
+
+    - name: Show final summary
+      ansible.builtin.debug:
+        msg: "{{ final_report.stdout.split('\n') }}"

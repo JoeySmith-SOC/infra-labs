@@ -1,11 +1,26 @@
-ansible_host: 192.168.0.92
+# SSH/Ansible connection
+ansible_host: 192.168.0.25
 ansible_user: ingen
 ansible_ssh_private_key_file: ~/.ssh/id_ed25519_lab
 
 # Network settings for nm_static_ip role
 nm_iface: "enp7s0"             # your wired interface
 nm_method: "manual"
-nm_ip_cidr: "192.168.0.92/24"  # 
+nm_ip_cidr: "192.168.0.25/24"  # 
 nm_gateway: "192.168.0.1"      # 
 nm_dns: ["1.1.1.1","8.8.8.8"]  # 
 nm_conn_name: ""               # let playbook role/auto-detect/create
+
+# Hypervisor settings
+hv_set_hostname: true
+hv_hostname: "Aurelius"
+
+# Network housekeeping (you chose DHCP reservations in router)
+hv_disable_wifi: true           # set to false if you want Wi-Fi kept on
+hv_ether_iface: "enp7s0"        # your wired NIC (confirmed UP)
+hv_images_dir: "/var/lib/libvirt/images"
+
+# Security hardening
+hv_enable_ufw: true
+hv_ufw_allow_ssh_from_any: true   # allow SSH from LAN; tighten later if you want
+hv_enable_fail2ban: true
