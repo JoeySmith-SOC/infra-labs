@@ -1,0 +1,121 @@
+- name: Create an Ubuntu Server VM via cloud image (libvirt)
+  hosts: Aurelius
+  become: true
+  gather_facts: true
+
+  vars:
+    # ----- Defaults (can be overridden with -e ... ) -----
+    vm_name: "ubuntu-lab01"
+    vm_memory_mb: 2048
+    vm_vcpus: 2
+    vm_disk_gb: 16
+    vm_network: "default"          # libvirt NAT network
+    vm_os_variant: "ubuntu22.04"   # `osinfo-query os` to see options
+    images_dir: "/var/lib/libvirt/images"
+    cloud_img_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    cloud_img_file: "{{ images_dir }}/jammy-server-cloudimg-amd64.img"
+    ci_user: "lab"
+    ci_hostname: "{{ vm_name }}"
+    controller_pubkey_path: "~/.ssh/id_ed25519_lab.pub"   # path on the CONTROL NODE (your laptop)
+
+  tasks:
+    - name: Ensure images directory exists
+      file:
+        path: "{{ images_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download cloud image if missing
+      get_url:
+        url: "{{ cloud_img_url }}"
+        dest: "{{ cloud_img_file }}"
+        mode: '0644'
+        force: no
+
+    - name: Create qcow2 overlay with size
+      command: >
+        qemu-img create -f qcow2 -F qcow2 -b {{ cloud_img_file }}
+        {{ images_dir }}/{{ vm_name }}.qcow2 {{ vm_disk_gb }}G
+      args:
+        creates: "{{ images_dir }}/{{ vm_name }}.qcow2"
+
+    - name: Build cloud-init seed (inject SSH key + install guest-agent)
+      shell: |
+        set -e
+        TMPDIR=$(mktemp -d)
+        PUBKEY="{{ lookup('file', controller_pubkey_path) | trim }}"
+        cat > "$TMPDIR/user-data" <<UD
+        #cloud-config
+        hostname: {{ ci_hostname }}
+        users:
+          - name: {{ ci_user }}
+            groups: sudo
+            shell: /bin/bash
+            sudo: ['ALL=(ALL) NOPASSWD:ALL']
+            ssh_authorized_keys:
+              - ${PUBKEY}
+        package_update: true
+        packages:
+          - qemu-guest-agent
+        runcmd:
+          - [ systemctl, enable, --now, qemu-guest-agent ]
+        ssh_pwauth: false
+        disable_root: true
+        UD
+        cat > "$TMPDIR/meta-data" <<MD
+        instance-id: iid-{{ vm_name }}
+        local-hostname: {{ ci_hostname }}
+        MD
+        cloud-localds {{ images_dir }}/{{ vm_name }}-seed.iso "$TMPDIR/user-data" "$TMPDIR/meta-data"
+      args:
+        executable: /bin/bash
+
+    - name: Install VM (headless)
+      command: >
+        virt-install
+        --name {{ vm_name }}
+        --memory {{ vm_memory_mb }}
+        --vcpus {{ vm_vcpus }}
+        --import
+        --disk path={{ images_dir }}/{{ vm_name }}.qcow2,format=qcow2,bus=scsi
+        --disk path={{ images_dir }}/{{ vm_name }}-seed.iso,device=cdrom
+        --controller type=scsi,model=virtio-scsi
+        --network network={{ vm_network }},model=virtio
+        --graphics none
+        --os-variant {{ vm_os_variant }}
+        --noautoconsole
+      args:
+        creates: "/etc/libvirt/qemu/{{ vm_name }}.xml"
+
+    - name: Start VM
+      command: virsh start {{ vm_name }}
+      register: startvm
+      failed_when: startvm.rc not in [0,1]
+      changed_when: startvm.rc == 0
+
+    - name: Wait for IP via guest agent (up to 90s)
+      shell: |
+        for i in $(seq 1 30); do
+          ip=$(virsh domifaddr {{ vm_name }} --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+          if [ -n "$ip" ]; then echo "$ip"; exit 0; fi
+          sleep 3
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      register: vm_ip_out
+      changed_when: false
+
+    - name: Write IP to a small file on hypervisor (for convenience)
+      copy:
+        dest: "{{ images_dir }}/{{ vm_name }}.ip"
+        content: "{{ vm_ip_out.stdout | default('unknown') }}\n"
+        mode: '0644'
+
+    - name: Print connection info
+      debug:
+        msg:
+          - "VM {{ vm_name }} created."
+          - "Login user: {{ ci_user }}"
+          - "NAT IP (libvirt): {{ vm_ip_out.stdout | default('unknown') }}"
+          - "Tip: add SSH ProxyJump via Aurelius to reach it directly."
